@@ -16,7 +16,7 @@ Each automation layer in a Kubernetes + GitOps stack can only see — and fix �
 
 | Layer | Heals | Example fault | Mechanism |
 |-------|-------|---------------|-----------|
-| **kubelet** | a process that fails its probe | `crash` — `/healthz` starts failing | liveness probe restarts the pod |
+| **kubelet** | a pod that dies | `crash` — the pod is deleted | the ReplicaSet recreates a fresh pod |
 | **gitops** (Argo CD) | manifest drift | `scale-db-zero`, `bad-image` — Deployment patched | selfHeal reverts live state to Git |
 | **agent** (Angel) | green-but-dead state Argo can't see | `db-truncate` — table wiped, pod healthy | targeted remediation (here: restore from backup) |
 | **unrecoverable** | nothing in-cluster can | `db-truncate` with no backup | needs out-of-band data or a human |
@@ -88,7 +88,7 @@ A real finding fell out of running this: **Argo selfHeal backs off under sustain
                                       └────────────────┘
 ```
 
-- **Playfield tenants** (`da-tenant-*`): a `mini-api` (FastAPI) + `mini-db` (Postgres). `mini-api` exposes the fault hooks (`/chaos/truncate`, `/chaos/crash`) and the remediation (`/admin/restore`). It seeds only on first deploy, so a restart does **not** undo a truncate — that's what makes the agent's lane real.
+- **Playfield tenants** (`da-tenant-*`): a `mini-api` (FastAPI) + `mini-db` (Postgres). `mini-api` exposes the truncate fault hook (`/chaos/truncate`) and the remediation (`/admin/restore`); the `crash` and drift faults act on Kubernetes objects directly. It seeds only on first deploy, so a restart does **not** undo a truncate — that's what makes the agent's lane real.
 - **Referee** (`da-referee`): picks faults, runs arms, polls each tenant's health directly to time recovery, and attributes the resolving layer by ablation.
 - **Devil / Angel** (n8n): the fault injector and the healer, each authenticating to the Kubernetes API with a separate, namespace-scoped ServiceAccount (`da-devil` can patch tenant Deployments and hit the chaos hooks; `da-angel` is narrower). Blast radius is bounded by RBAC.
 
@@ -98,7 +98,8 @@ A real finding fell out of running this: **Argo selfHeal backs off under sustain
 
 Built honestly, including the places it could be poked:
 
-- **The agent only earns its keep in one row.** The matrix says so plainly: the kubelet and Argo handle three of the four faults with zero agent involvement. A `livenessProbe` is the right tool for `crash`; selfHeal is the right tool for drift. The agent is justified *only* for green-but-dead corruption that survives a restart — which is exactly the row the harness isolates. Showing that boundary, rather than asserting the agent is always useful, is the point.
+- **The agent only earns its keep in one row.** The matrix says so plainly: Kubernetes and Argo handle three of the four faults with zero agent involvement, in seconds. A pod restart / liveness probe is the right tool for a dead pod; selfHeal is the right tool for drift. The agent is justified *only* for green-but-dead corruption that survives a restart — which is exactly the row the harness isolates. Showing that boundary, rather than asserting the agent is always useful, is the point.
+- **Both platform healers back off under sustained failure.** Argo selfHeal reverts the first drift in ~5s but takes minutes after a burst of them; the kubelet's `CrashLoopBackOff` does the same to a repeatedly-crashing pod. Resilience automation degrades exactly when failures cluster — the `crash` fault deletes the pod (fresh ReplicaSet, no backoff) specifically so the measurement isn't distorted by it.
 - **Why n8n?** It's a low-code automation platform, not a controller — it polls on a timer and has no watch API, so it's strictly worse than an operator for tight reconcile loops. It's used here because the agent's real value is *diagnosis + a targeted runbook action* (restore, escalate), where a human-readable, editable workflow is a reasonable fit, and to test how far such a platform goes for ops tasks. For `crash`/drift it correctly does nothing.
 - **The faults are deliberately small.** Two of them (`crash`, `truncate`) are contrived hooks in the playfield app rather than organic failures — they exist to be unambiguous representatives of their resolution class, not to be realistic incidents.
 - **Earlier this project had a self-inflicted bug** worth keeping in the open: the Angel used to poll Argo's sync status to decide whether to act, and lost the race (Argo reverts in ~5s, the Angel polled every 15s), crediting itself for GitOps's saves. The fix was to route on the *symptom* of the failing check, not on the platform's transient state — a general lesson: **a remediator that reacts to the platform's state instead of the failure's nature will race the platform.**
