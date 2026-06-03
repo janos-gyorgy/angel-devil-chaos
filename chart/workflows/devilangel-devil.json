@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Devil Fault Injector\n\n**Trigger:** webhook `POST /webhook/da-devil`. The Referee posts `{run_id, fault_type, expected_layer, tenant, namespace}` per round; the Devil is a dumb executor and `Which Fault?` routes on `fault_type`.\n\nFour faults, one per resolution lane:\n\n- **crash** (kubelet): POST mini-api `/chaos/crash` — /healthz fails, the liveness probe restarts the pod.\n- **scale-db-zero** (gitops): PATCH mini-db Deployment `replicas=0` — manifest drift Argo reverts.\n- **bad-image** (gitops): PATCH mini-db image to a bogus tag — manifest drift Argo reverts.\n- **db-truncate** (agent): POST mini-api `/chaos/truncate` — green-but-dead; no drift, not restart-healable, needs the Angel's restore.",
+        "content": "## Devil Fault Injector\n\n**Trigger:** webhook `POST /webhook/da-devil`. The Referee posts `{run_id, fault_type, expected_layer, tenant, namespace}` per round; the Devil is a dumb executor and `Which Fault?` routes on `fault_type`.\n\nFour faults, one per resolution lane:\n\n- **crash** (kubelet): DELETE the mini-api pod via the K8s API — the ReplicaSet recreates a fresh one (reliable; no CrashLoopBackOff).\n- **scale-db-zero** (gitops): PATCH mini-db Deployment `replicas=0` — manifest drift Argo reverts.\n- **bad-image** (gitops): PATCH mini-db image to a bogus tag — manifest drift Argo reverts.\n- **db-truncate** (agent): POST mini-api `/chaos/truncate` — green-but-dead; no drift, not restart-healable, needs the Angel's restore.",
         "height": 320,
         "width": 560,
         "color": 7
@@ -232,18 +232,19 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ 'http://mini-api.' + $('Devil Webhook').item.json.body.namespace + '.svc.cluster.local/chaos/crash' }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { run_id: $('Devil Webhook').item.json.body.run_id } }}",
+        "method": "DELETE",
+        "url": "={{ 'https://kubernetes.default.svc.cluster.local:443/api/v1/namespaces/' + $('Devil Webhook').item.json.body.namespace + '/pods?labelSelector=' + encodeURIComponent('app.kubernetes.io/name=mini-api') }}",
+        "sendBody": false,
         "options": {
+          "allowUnauthorizedCerts": true,
           "response": {
             "response": {
               "neverError": true
             }
           }
-        }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -252,7 +253,13 @@
         192
       ],
       "id": "10c479a2-d12a-4014-8bee-85722433587f",
-      "name": "Inject: Crash"
+      "name": "Inject: Crash",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER_K8S_DEVIL_BEARER",
+          "name": "K8s Devil Bearer"
+        }
+      }
     },
     {
       "parameters": {

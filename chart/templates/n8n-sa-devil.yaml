@@ -38,7 +38,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "delete", "deletecollection"]  # deletecollection: kill pods by label (crash fault)
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
