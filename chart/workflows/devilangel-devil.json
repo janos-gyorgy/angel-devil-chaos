@@ -1,0 +1,233 @@
+{
+  "name": "Devil — DA Fault Injector",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Devil Fault Injector (Phase 7)\n\n**Trigger:** production webhook `POST /webhook/da-devil`\nThe Referee's match loop POSTs `{run_id, fault_type, tier, tenant, namespace}` per round.\n\n**This workflow is a dumb executor** — the Referee picks the fault and writes devil_injections; the Devil just performs the injection. `Which Fault?` routes on `fault_type`:\n\n**Tier B — `db-truncate` (green-but-dead):**\n- POST tenant mini-api `/chaos/truncate`; pod stays Running, /healthz 200, /db-ping red\n- Argo can't see it (no manifest drift) → only the Angel's restart heals it\n\n**Tier C — `scale-db-zero` (control group):**\n- PATCH the tenant `mini-db` Deployment `spec.replicas=0` via the K8s API (K8s Devil Bearer creds, da-devil SA)\n- This IS manifest drift → Argo selfHeal reverts it in seconds, no Angel action needed\n\nWorkflow must be **active** for the production webhook to register.",
+        "height": 340,
+        "width": 540,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -320
+      ],
+      "id": "phase4-note",
+      "name": "Phase 4 Note"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "da-devil",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "webhook",
+      "name": "Devil Webhook",
+      "webhookId": "da-devil-webhook"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "db-truncate-cond",
+                    "leftValue": "={{ $json.body.fault_type }}",
+                    "rightValue": "db-truncate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "db-truncate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "scale-db-zero-cond",
+                    "leftValue": "={{ $json.body.fault_type }}",
+                    "rightValue": "scale-db-zero",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "scale-db-zero"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        240,
+        0
+      ],
+      "id": "fault-switch",
+      "name": "Which Fault?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://mini-api.' + $('Devil Webhook').item.json.body.namespace + '.svc.cluster.local/chaos/truncate' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { run_id: $('Devil Webhook').item.json.body.run_id } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        -60
+      ],
+      "id": "inject-truncate",
+      "name": "Inject: Truncate DB"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "unknown-assign",
+              "name": "status",
+              "value": "ignored: unknown fault_type",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        500,
+        140
+      ],
+      "id": "unknown-fault",
+      "name": "Unknown Fault"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://kubernetes.default.svc.cluster.local:443/apis/apps/v1/namespaces/' + $('Devil Webhook').item.json.body.namespace + '/deployments/mini-db' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/merge-patch+json",
+        "body": "={{ JSON.stringify({ spec: { replicas: 0 } }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        60
+      ],
+      "id": "450c779c-7811-43a3-9325-0edf8ff00c9f",
+      "name": "Inject: Scale DB to 0",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER_K8S_DEVIL_BEARER",
+          "name": "K8s Devil Bearer"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Devil Webhook": {
+      "main": [
+        [
+          {
+            "node": "Which Fault?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which Fault?": {
+      "main": [
+        [
+          {
+            "node": "Inject: Truncate DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Inject: Scale DB to 0",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unknown Fault",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "meta": {
+    "templateId": "da-devil-fault-injector"
+  }
+}

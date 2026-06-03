@@ -1,0 +1,10 @@
+# Argo loads this file via the `da` Application in applications.yml.
+# Overrides on top of values.yaml. Phase toggles live here so you can ship
+# Phase 1 without lighting up Phase 2/3 resources.
+
+playfield:
+  enabled: true
+referee:
+  enabled: true    # Phase 2 live
+n8nRbac:
+  enabled: true    # Phase 3 live

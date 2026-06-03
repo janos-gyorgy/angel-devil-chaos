@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@v4
+      - uses: helm/chart-testing-action@v2.7.0
+      - name: ct lint
+        run: ct lint --config .ct.yaml
+
+  render-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/kubeconform
+      - name: helm lint
+        run: helm lint chart -f chart/values.yaml -f chart/values-da.yml
+      - name: helm template
+        run: helm template da chart -f chart/values.yaml -f chart/values-da.yml > rendered.yaml
+      # CRDs (Traefik IngressRoute, ESO SecretStore/ExternalSecret) aren't in the
+      # default schema set, so missing schemas are ignored rather than failed.
+      - name: kubeconform
+        run: kubeconform -strict -ignore-missing-schemas -summary rendered.yaml

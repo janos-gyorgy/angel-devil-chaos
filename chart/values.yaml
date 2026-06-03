@@ -1,0 +1,64 @@
+# Defaults for the angel-devil-chaos (devilangel) chart. In a GitOps setup an
+# Argo CD Application supplies an overrides file (see values-da.yml) layered on
+# top of these defaults; the phase toggles below let you ship incrementally.
+
+# Toggle to render the playfield tenants. Phase 1 = true.
+playfield:
+  enabled: true
+
+# Toggle to render the referee webapp + Postgres. Phase 2 = true.
+referee:
+  enabled: false
+
+# Toggle to render the Devil/Angel ServiceAccounts in the n8n namespace. Phase 3+ = true.
+n8nRbac:
+  enabled: false
+
+# ── Per-tenant playfield config ───────────────────────────────────────────────
+# Each tenant gets: SA + ResourceQuota + LimitRange + namespaced Vault SecretStore
+# + ExternalSecret (api-key) + mini-db (Postgres) + mini-api (FastAPI) + IngressRoute.
+tenants:
+  - name: acme
+    namespace: da-tenant-acme
+    host: da-tenant-acme.example.com
+    vaultPath: secret/da-tenant-acme
+    vaultRole: da-tenant-acme        # must match a Vault Kubernetes-auth role
+  - name: globex
+    namespace: da-tenant-globex
+    host: da-tenant-globex.example.com
+    vaultPath: secret/da-tenant-globex
+    vaultRole: da-tenant-globex
+
+# Image tags. Built on the node (see helm-charts/devilangel/app/*/Dockerfile).
+images:
+  miniApi: mini-api:0.2.0
+  referee: da-referee:0.4.0
+  miniDb: postgres:15-alpine
+
+# Resource fence applied to every container that doesn't override.
+defaults:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Quota/Limit for each da-tenant-* namespace.
+tenantQuota:
+  pods: "8"
+  requestsCpu: "500m"
+  requestsMemory: 512Mi
+  limitsCpu: "1500m"
+  limitsMemory: 1Gi
+tenantLimits:
+  default:
+    cpu: 200m
+    memory: 256Mi
+  defaultRequest:
+    cpu: 25m
+    memory: 64Mi
+  max:
+    cpu: "1"
+    memory: 512Mi

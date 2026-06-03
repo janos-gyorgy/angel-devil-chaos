@@ -1,0 +1,93 @@
+{{- if .Values.n8nRbac.enabled }}
+---
+# ── da-angel: ServiceAccount in n8n ──────────────────────────────────────
+# Read + targeted remediation access in da-tenant-* plus ArgoCD app status
+# cluster-wide (read-only). n8n workflows use the da-angel-token bearer token.
+# Read with: kubectl get secret da-angel-token -n n8n \
+#   -o jsonpath='{.data.token}' | base64 -d
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: da-angel
+  namespace: n8n
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: da-angel-token
+  namespace: n8n
+  annotations:
+    kubernetes.io/service-account.name: da-angel
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+type: kubernetes.io/service-account-token
+---
+# ── ClusterRole: read + targeted remediation in tenant namespaces ─────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: da-angel-tenant
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete", "deletecollection"]   # deletecollection: restart-by-label remediation
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "patch"]
+---
+{{- range .Values.tenants }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: da-angel
+  namespace: {{ .namespace }}
+  labels:
+{{ include "devilangel.labels" $ | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: da-angel-tenant
+subjects:
+  - kind: ServiceAccount
+    name: da-angel
+    namespace: n8n
+---
+{{- end }}
+# ── ClusterRole: read ArgoCD Application objects (status polling) ─────────────
+# Bound cluster-wide but read-only, so blast radius is negligible.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: da-angel-argocd-reader
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: da-angel-argocd-reader
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: da-angel-argocd-reader
+subjects:
+  - kind: ServiceAccount
+    name: da-angel
+    namespace: n8n
+{{- end }}

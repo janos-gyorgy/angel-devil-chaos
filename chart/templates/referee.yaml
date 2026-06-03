@@ -1,0 +1,247 @@
+{{- if .Values.referee.enabled }}
+---
+# ── da-referee: ServiceAccount + tenant-scoped Vault store ────────────────────
+# Same pattern as the playfield tenants. Prereqs (manual, once):
+#   vault kv put secret/da-referee reset-secret=$(openssl rand -hex 24) n8n-trigger-token=placeholder
+#   vault policy write da-referee - <<<'path "secret/data/da-referee"   {capabilities=["read"]}
+#                                     path "secret/metadata/da-referee" {capabilities=["read"]}'
+#   vault write auth/kubernetes/role/da-referee \
+#     bound_service_account_names=referee \
+#     bound_service_account_namespaces=da-referee \
+#     policies=da-referee ttl=1h
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: referee
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: vault-referee
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  provider:
+    vault:
+      server: http://vault.vault.svc.cluster.local:8200
+      path: secret
+      version: v2
+      auth:
+        kubernetes:
+          mountPath: kubernetes
+          role: da-referee
+          serviceAccountRef:
+            name: referee
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: referee-secrets
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-referee
+    kind: SecretStore
+  target:
+    name: referee-secrets
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: RESET_SECRET
+      remoteRef:
+        key: da-referee
+        property: reset-secret
+        conversionStrategy: Default      # ESO defaulting webhook adds these;
+        decodingStrategy: None           # declare them so Argo doesn't see drift
+        metadataPolicy: None
+    - secretKey: N8N_TRIGGER_TOKEN
+      remoteRef:
+        key: da-referee
+        property: n8n-trigger-token
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+---
+# ── da-referee: kill switch (used in Phase 3+) ────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: referee-state
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+data:
+  match_active: "false"
+---
+# ── da-referee: Postgres (trust auth — sealed namespace) ──────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: referee-db-data
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: referee-db
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: referee-db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: referee-db
+{{ include "devilangel.labels" . | indent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: {{ .Values.images.miniDb }}
+          env:
+            - name: POSTGRES_DB
+              value: daref
+            - name: POSTGRES_USER
+              value: referee
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "referee", "-d", "daref"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: referee-db-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: referee-db
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: referee-db
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: 5432
+---
+# ── da-referee: FastAPI ───────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: referee
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: referee
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: referee
+{{ include "devilangel.labels" . | indent 8 }}
+    spec:
+      serviceAccountName: referee
+      containers:
+        - name: referee
+          image: {{ .Values.images.referee }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              value: postgresql://referee@referee-db.da-referee.svc.cluster.local:5432/daref
+            - name: N8N_DEVIL_WEBHOOK
+              value: "http://n8n.n8n.svc.cluster.local/webhook/da-devil"
+            - name: RESET_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: referee-secrets
+                  key: RESET_SECRET
+            - name: N8N_TRIGGER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: referee-secrets
+                  key: N8N_TRIGGER_TOKEN
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: referee
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: referee
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: referee
+  namespace: da-referee
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`referee.example.com`)
+      kind: Rule
+      services:
+        - name: referee
+          port: 80
+{{- end }}

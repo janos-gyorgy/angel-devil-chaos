@@ -1,0 +1,79 @@
+{{- if .Values.n8nRbac.enabled }}
+---
+# ── da-devil: ServiceAccount in n8n ──────────────────────────────────────
+# Deployed into n8n via extraDestinationNamespaces on the AppProject.
+# n8n workflows use the da-devil-token bearer token to call the K8s API.
+# Verify isolation: kubectl auth can-i delete pods -n kube-system \
+#   --as=system:serviceaccount:n8n:da-devil  → "no"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: da-devil
+  namespace: n8n
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+---
+# Long-lived token for use in n8n Header Auth credential.
+# Read with: kubectl get secret da-devil-token -n n8n \
+#   -o jsonpath='{.data.token}' | base64 -d
+apiVersion: v1
+kind: Secret
+metadata:
+  name: da-devil-token
+  namespace: n8n
+  annotations:
+    kubernetes.io/service-account.name: da-devil
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+type: kubernetes.io/service-account-token
+---
+# ── ClusterRole: destructive verbs — paired with namespace RoleBindings only ──
+# Never bound cluster-wide. The RoleBindings below restrict scope to da-tenant-*.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: da-devil-tenant
+  labels:
+{{ include "devilangel.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "delete", "create"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "delete"]
+---
+{{- range .Values.tenants }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: da-devil
+  namespace: {{ .namespace }}
+  labels:
+{{ include "devilangel.labels" $ | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: da-devil-tenant
+subjects:
+  - kind: ServiceAccount
+    name: da-devil
+    namespace: n8n
+---
+{{- end }}
+{{- end }}
