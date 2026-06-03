@@ -1,75 +1,61 @@
 # angel-devil-chaos
 
-A small chaos-engineering arena that answers one question with data:
+A small chaos-engineering **ablation harness** that answers one question with data:
 
-> **Of the things that break in a GitOps cluster, which ones does Argo CD heal for free — and which ones still need an agent?**
+> **When something breaks in a GitOps cluster, *which automation layer* actually fixes it — the kubelet, Argo CD, an agent, or nobody?**
 
-A **Devil** injects faults. An **Angel** tries to heal them. A **Referee** runs the match, scores every round, and writes a scoreboard. The Devil and Angel are [n8n](https://n8n.io) workflows; the Referee is a small FastAPI app. Everything runs on Kubernetes and is reconciled by Argo CD.
+A **Devil** injects faults. The harness then measures which layer brings the service back to green. The trick is that it measures the *residual*: it runs each fault with the agent **off** to see what the platform heals for free, and again with the agent **on** to see what's left. The agent is an **Angel** — an [n8n](https://n8n.io) workflow. The orchestrator is a small FastAPI **Referee**.
 
-The interesting part isn't the demo — it's what the scoreboard reveals about the **boundary of GitOps self-healing**.
-
-![The Referee scoreboard: a finished mixed match reading angel 10, devil 0, with a live feed where Tier B db-truncate faults are healed by angel-action and Tier C scale-db-zero faults are healed by gitops.](docs/img/scoreboard.png)
-
-In a healthy run the live feed reads its own conclusion out loud: `db-truncate [Tier B] → angel-action` (GitOps couldn't see it) and `scale-db-zero [Tier C] → gitops` (Argo reverted it, the Angel stood down).
+This is deliberately *not* a scoreboard that reports a number you fed it. Earlier versions did exactly that, and it was a fair criticism — see [Design notes](#design-notes-what-this-is-and-isnt).
 
 ---
 
-## The core idea: two tiers of fault
+## The four resolution layers
 
-Argo CD with `selfHeal: true` continuously reverts the cluster to match Git. That makes it a great healer for one *class* of fault and completely blind to another.
+Each automation layer in a Kubernetes + GitOps stack can only see — and fix — a certain class of fault. The whole point is to draw the boundaries.
 
-| Tier | Example fault | What Argo CD sees | Who actually heals it |
-|------|---------------|-------------------|-----------------------|
-| **B — green-but-dead** | App truncates its own database table. Pod stays `Running`, `/healthz` returns 200, but the data is gone. | **Nothing.** No manifest drift — the Deployment is unchanged. Argo is blind. | Only a targeted remediation (here: restart the pod, which re-seeds on startup). This is the Angel's job. |
-| **C — manifest drift** | The DB `Deployment` is scaled to `replicas: 0`. The database goes unreachable. | **Drift.** Live state ≠ Git. Argo reverts `replicas` back to 1. | **GitOps, for free.** selfHeal fixes it in seconds; the Angel should stand down. |
+| Layer | Heals | Example fault | Mechanism |
+|-------|-------|---------------|-----------|
+| **kubelet** | a process that fails its probe | `crash` — `/healthz` starts failing | liveness probe restarts the pod |
+| **gitops** (Argo CD) | manifest drift | `scale-db-zero`, `bad-image` — Deployment patched | selfHeal reverts live state to Git |
+| **agent** (Angel) | green-but-dead state Argo can't see | `db-truncate` — table wiped, pod healthy | targeted remediation (here: restore from backup) |
+| **unrecoverable** | nothing in-cluster can | `db-truncate` with no backup | needs out-of-band data or a human |
 
-Tier B is the *control group's opposite*: it's the stuff a naive "just run Argo" setup silently fails to recover. Tier C is the control group: it proves the harness measures GitOps correctly, because the Angel must **not** take credit for it.
-
-The headline metric is **share-needing-Angel**: the fraction of rounds where GitOps alone was insufficient. In a healthy run of the bundled `mixed` mode (70% Tier B / 30% Tier C), it lands at **70%** — exactly the Tier B share.
+The interesting region is the **agent** row: a truncated table leaves the pod `Running`, `/healthz` at 200, and the Deployment byte-for-byte correct — so the kubelet sees nothing to restart and Argo sees no drift. A restart doesn't help either (the data is still gone). That's the gap an agent has to fill — and if there's no backup, *nobody* can, which is the honest fourth outcome.
 
 ---
 
-## How a round works
+## How it measures (and why that isn't circular)
 
-```
-Referee picks a fault ──> writes devil_injections row ──> POSTs the Devil webhook
-                                                              │
-                                          Devil injects the fault (Tier B or C)
-                                                              │
-   Angel polls every 15s, detects the broken check, diagnoses by symptom,
-   heals (or stands down for GitOps), and logs an angel_actions row
-                                                              │
-   Referee polls angel_actions; first qualifying heal wins the round.
-   Timeout ⇒ Devil point (a Tier B timeout is a "big win" — GitOps blind spot
-   that nothing recovered).
-```
+For each fault the harness runs two **arms**:
 
-Correlation between Devil and Angel is purely by **tenant + time window** — the Angel never reads the Devil's injection record. The two agents are fully decoupled; the Referee is the only thing that knows the ground truth.
+- **baseline** — the Angel is paused. Only the kubelet and Argo can act.
+- **agent** — the Angel is active. The residual it adds on top.
 
-## The Angel diagnoses by symptom (and why that matters)
+Attribution then falls out of the experiment design, no guessing required:
 
-The Angel never reads which fault was injected. It infers the tier from the **symptom** of the failing health check:
+- recovers with the Angel **off** ⇒ the platform layer that owns it (kubelet or gitops)
+- recovers **only** with the Angel on ⇒ the agent
+- recovers under **neither** ⇒ unrecoverable
 
-- `db-ping` returns **"0 notes"** → `DB:CorruptedTable:ZeroNotes` → **Tier B** → restart the app, log `angel-action`.
-- `db-ping` returns a **connection error** → `DB:Unreachable:*` → **Tier C** → wait for Argo's selfHeal, verify recovery, log `gitops`.
+The output is a **resolution matrix**, not an aggregate. The number that matters — *how much the agent adds* — is the difference between the two arms, which is emergent: it depends on each fault's nature and which layer can touch it, never on how many of each fault you chose to inject.
 
-> ### A bug worth keeping in the README
-> The first version of the Angel didn't route on symptom. It polled Argo CD's
-> sync status to decide "is Argo already healing this?" — and it lost the race.
-> Argo reverts a scaled-to-zero Deployment in **~5 seconds**, but the Angel polls
-> every **15 seconds**, so by the time it looked, Argo was already `Synced` again.
-> The Angel then ran its Tier B remediation, saw the app was green (because Argo
-> had quietly fixed it), and **credited itself** for GitOps's work — inflating
-> share-needing-Angel from 70% to ~90%.
->
-> The fix: stop trying to catch Argo in the act. Route on the *symptom* instead.
-> An unreachable DB is manifest-level drift Argo owns; a corrupted-but-up DB is
-> Argo's blind spot. That distinction is something a real SRE makes too, and it
-> removes the race entirely.
+### The matrix from a clean run
 
-![The Angel n8n workflow: tenants are polled every 15s; on a fault, Prep Action derives a signature that an "Infra Fault?" switch routes on. DB:Unreachable takes the top path — Wait for GitOps, Verify, log a gitops heal — while DB:CorruptedTable takes the bottom path — Restart Mini-API, wait, verify, log an angel-action heal.](docs/img/angel-workflow.png)
+4 faults × 2 arms (`crash`, `scale-db-zero`, `bad-image`, `db-truncate`):
 
-The `Infra Fault?` switch is the whole fix: the top branch is the Angel standing down for GitOps, the bottom branch is the Angel doing what GitOps can't — decided from the symptom, not from anything Argo reports.
+| fault | expected | baseline arm | agent arm |
+|-------|----------|--------------|-----------|
+| `crash` | kubelet | **kubelet** ✓ | **kubelet** ✓ |
+| `scale-db-zero` | gitops | **gitops** ✓ | **gitops** ✓ |
+| `bad-image` | gitops | **gitops** ✓ | **gitops** ✓ |
+| `db-truncate` | agent | **unrecovered** | **agent** ✓ |
+
+<!-- MATRIX -->
+
+Read the bottom row across: a truncated table is **unrecovered** by the kubelet+Argo baseline, and only the agent arm recovers it. That single row, differing across arms, is the entire justification for an agent existing — everything above it, the platform already handles for free. (Flip `BACKUP_AVAILABLE=false` and even the agent arm goes **unrecovered** — the agent can only restore what there's a backup for.)
+
+A real finding fell out of running this: **Argo selfHeal backs off under sustained drift.** The first drift reverts in seconds; after a burst of them, a later revert can take a couple of minutes. The gitops deadlines here are wide on purpose so that backoff isn't mis-recorded as "unrecoverable."
 
 ---
 
@@ -78,52 +64,44 @@ The `Infra Fault?` switch is the whole fix: the top branch is the Angel standing
 ```
                          ┌──────────────────────────┐
                          │  Referee (FastAPI + PG)   │  da-referee ns
-                         │  picks faults, scores,    │  /score, /start-match,
-                         │  serves the scoreboard    │  /events (SSE)
-                         └─────────┬───────────┬─────┘
-            POST webhook           │           │  poll angel_actions
-                 ┌─────────────────┘           └───────────────┐
-                 ▼                                              ▼
-        ┌────────────────┐                            ┌──────────────────┐
-        │  Devil (n8n)   │  injects:                  │   Angel (n8n)    │
-        │  - truncate DB │  Tier B  ─ app self-corrupt│  - detect broken │
-        │  - scale DB →0 │  Tier C  ─ k8s API patch   │  - diagnose tier │
-        └───────┬────────┘                            │  - heal / stand  │
-                ▼                                      │    down for Argo │
-   ┌─────────────────────────┐                        └────────┬─────────┘
-   │  Playfield tenants       │  da-tenant-acme / -globex       │
-   │  mini-api (FastAPI) +    │ <───────────────────────────────┘
-   │  mini-db (Postgres)      │   restart pod  /  (Argo reverts replicas)
-   └─────────────────────────┘
-                ▲
-                │  selfHeal: true
-        ┌───────┴────────┐
-        │    Argo CD     │  reconciles everything from Git
-        └────────────────┘
+                         │  runs arms, polls tenant  │  /start-match {arm},
+                         │  health, builds matrix    │  /score, /events (SSE)
+                         └───┬───────────────┬───────┘
+        POST webhook (Devil) │               │ direct health poll (/healthz,/db-ping)
+                  ┌──────────┘               └─────────────┐
+                  ▼                                        ▼
+        ┌──────────────────┐                   ┌──────────────────────────┐
+        │   Devil (n8n)    │  injects 4 faults │  Playfield tenants        │
+        │  crash / scale / │ ────────────────► │  mini-api (FastAPI) +      │
+        │  bad-image /      │                   │  mini-db (Postgres)        │
+        │  truncate         │                   └────────────┬──────────────┘
+        └──────────────────┘                                 │
+                  ┌──────────────────┐         restore        │
+                  │   Angel (n8n)    │ ──────────────────────►┤
+                  │  gated by arm;   │   (only for truncate)  │
+                  │  restore or      │                        │
+                  │  stand down      │   kubelet restart ◄────┤
+                  └──────────────────┘   Argo revert     ◄────┘
+                                              ▲
+                                      ┌───────┴────────┐
+                                      │    Argo CD     │ selfHeal: true
+                                      └────────────────┘
 ```
 
-- **Playfield tenants** (`da-tenant-*`): each is a `mini-api` (FastAPI) + `mini-db` (Postgres) with three health checks (`/healthz`, `/db-ping`, `/secret-check`). They exist to be broken and watched. Per-tenant `ResourceQuota`, `LimitRange`, and a namespace-scoped secret store keep them isolated.
-- **Referee** (`da-referee`): orchestrates matches, owns the scoreboard Postgres, streams live events over SSE.
-- **n8n RBAC**: the Devil and Angel run as n8n workflows authenticating to the Kubernetes API with **separate, namespace-scoped ServiceAccounts** (`da-devil`, `da-angel`). The Devil can delete pods and patch Deployments *only in the tenant namespaces*; the Angel gets a deliberately narrow healer role. Blast radius is bounded by RBAC, not by hope.
-
-![The Devil n8n workflow: a webhook feeds a "Which Fault?" switch that routes db-truncate to an "Inject: Truncate DB" node (Tier B) and scale-db-zero to an "Inject: Scale DB to 0" node (Tier C), with an Unknown Fault fallback.](docs/img/devil-workflow.png)
-
-The Devil is a dumb executor — the Referee decides *what* breaks and the switch only routes `fault_type` to the right injector. Tier B calls the tenant's own `/chaos/truncate`; Tier C patches the `mini-db` Deployment to zero replicas via the Kubernetes API.
+- **Playfield tenants** (`da-tenant-*`): a `mini-api` (FastAPI) + `mini-db` (Postgres). `mini-api` exposes the fault hooks (`/chaos/truncate`, `/chaos/crash`) and the remediation (`/admin/restore`). It seeds only on first deploy, so a restart does **not** undo a truncate — that's what makes the agent's lane real.
+- **Referee** (`da-referee`): picks faults, runs arms, polls each tenant's health directly to time recovery, and attributes the resolving layer by ablation.
+- **Devil / Angel** (n8n): the fault injector and the healer, each authenticating to the Kubernetes API with a separate, namespace-scoped ServiceAccount (`da-devil` can patch tenant Deployments and hit the chaos hooks; `da-angel` is narrower). Blast radius is bounded by RBAC.
 
 ---
 
-## What this repo assumes
+## Design notes (what this is, and isn't)
 
-This is a **reference architecture**, not a turnkey chart. It is the real, working
-setup extracted from a single-node k3s homelab and sanitized. It assumes:
+Built honestly, including the places it could be poked:
 
-- **Argo CD** with `selfHeal: true` watching the tenant manifests (the whole premise).
-- **n8n** running in a namespace called `n8n`, into which the Devil/Angel ServiceAccounts are deployed (via `extraDestinationNamespaces` on your Argo `AppProject`). Import the two workflows from [`chart/workflows/`](chart/workflows/) and attach credentials (see below).
-- **Traefik** as ingress with a `websecure` entrypoint (adjust `entryPoints` / hosts to your environment).
-- **External Secrets Operator + Vault** for the per-tenant API keys and the Referee's secrets. The `vault.vault.svc` server address and the Kubernetes-auth roles are placeholders — wire them to your own Vault, or swap the `SecretStore`/`ExternalSecret` resources for your secret backend.
-- Container images built locally and imported into the node (see each `app/*/Dockerfile`); there is no registry push in the reference. Point `images.*` at your registry if you prefer.
-
-None of these are load-bearing for the *idea* — they're the substrate it was built on. The transferable parts are the two-tier fault model, the symptom-routing Angel, and the Referee's scoring.
+- **The agent only earns its keep in one row.** The matrix says so plainly: the kubelet and Argo handle three of the four faults with zero agent involvement. A `livenessProbe` is the right tool for `crash`; selfHeal is the right tool for drift. The agent is justified *only* for green-but-dead corruption that survives a restart — which is exactly the row the harness isolates. Showing that boundary, rather than asserting the agent is always useful, is the point.
+- **Why n8n?** It's a low-code automation platform, not a controller — it polls on a timer and has no watch API, so it's strictly worse than an operator for tight reconcile loops. It's used here because the agent's real value is *diagnosis + a targeted runbook action* (restore, escalate), where a human-readable, editable workflow is a reasonable fit, and to test how far such a platform goes for ops tasks. For `crash`/drift it correctly does nothing.
+- **The faults are deliberately small.** Two of them (`crash`, `truncate`) are contrived hooks in the playfield app rather than organic failures — they exist to be unambiguous representatives of their resolution class, not to be realistic incidents.
+- **Earlier this project had a self-inflicted bug** worth keeping in the open: the Angel used to poll Argo's sync status to decide whether to act, and lost the race (Argo reverts in ~5s, the Angel polled every 15s), crediting itself for GitOps's saves. The fix was to route on the *symptom* of the failing check, not on the platform's transient state — a general lesson: **a remediator that reacts to the platform's state instead of the failure's nature will race the platform.**
 
 ---
 
@@ -131,45 +109,37 @@ None of these are load-bearing for the *idea* — they're the substrate it was b
 
 ```
 chart/
-  Chart.yaml                     Helm chart (phase-toggled: playfield / referee / n8nRbac)
-  values.yaml                    defaults + per-tenant config
-  values-da.yml                  example overrides (enables all phases)
+  Chart.yaml  values.yaml  values-da.yml
   templates/
-    playfield-tenants.yaml       mini-api + mini-db + quota + secret store, per tenant
-    referee.yaml                 Referee app, Postgres, secrets, IngressRoute
-    n8n-sa-angel.yaml            Angel ServiceAccount + narrow healer RBAC
-    n8n-sa-devil.yaml            Devil ServiceAccount + tenant-scoped destructive RBAC
+    playfield-tenants.yaml   mini-api + mini-db + quota + secret store, per tenant
+    referee.yaml             Referee app, Postgres, IngressRoute
+    n8n-sa-angel.yaml        Angel ServiceAccount + narrow healer RBAC
+    n8n-sa-devil.yaml        Devil ServiceAccount + tenant-scoped fault RBAC
   app/
-    mini-api/                    playfield app (FastAPI) — the thing that breaks
-    referee/                     match orchestrator + scoreboard (FastAPI + Jinja)
+    mini-api/                playfield app — fault hooks + /admin/restore
+    referee/                 ablation orchestrator + resolution-matrix UI
   workflows/
-    devilangel-devil.json        Devil n8n workflow (fault injector)
-    devilangel-angel.json        Angel n8n workflow (symptom-routing healer)
+    devilangel-devil.json    Devil n8n workflow (4-fault injector)
+    devilangel-angel.json    Angel n8n workflow (restore / stand-down healer)
 ```
+
+## What this repo assumes
+
+A **reference architecture**, not a turnkey chart — the real setup from a single-node k3s homelab, sanitized. It assumes **Argo CD** (`selfHeal: true`), **n8n** in a namespace called `n8n` (import the two workflows from `chart/workflows/` and attach a K8s bearer credential per agent), **Traefik** ingress, and **External Secrets + Vault** for the per-tenant secrets (placeholders — wire to your own). Images are built locally and imported into the node. None of these are load-bearing for the *idea*; the transferable parts are the four-layer model and the ablation method.
 
 ## Quickstart (sketch)
 
 ```bash
-# 1. Build the two app images and make them available to your cluster
-( cd chart/app/mini-api && docker build -t mini-api:0.2.0 . )
-( cd chart/app/referee && docker build -t da-referee:0.4.0 . )
-
-# 2. Render / install (adjust hosts, vault server, namespaces first)
+( cd chart/app/mini-api && docker build -t mini-api:0.3.0 . )
+( cd chart/app/referee  && docker build -t da-referee:0.5.2 . )
 helm template da chart -f chart/values.yaml -f chart/values-da.yml | kubectl apply -f -
-#    …or point an Argo CD Application at chart/ with values-da.yml
+# import chart/workflows/*.json into n8n, attach the da-devil / da-angel SA tokens, activate both
 
-# 3. In n8n: import both chart/workflows/*.json, attach a K8s bearer credential
-#    per agent (the da-devil / da-angel ServiceAccount tokens), activate both.
-
-# 4. Run a match
-curl -XPOST http://referee.example.com/start-match \
-  -H content-type:application/json -d '{"rounds":10,"mode":"mixed"}'
-
-# 5. Watch the scoreboard
-curl http://referee.example.com/score | jq
+# run both arms, then read the matrix
+curl -XPOST http://referee.example.com/start-match -H content-type:application/json -d '{"rounds":4,"arm":"baseline"}'
+curl -XPOST http://referee.example.com/start-match -H content-type:application/json -d '{"rounds":4,"arm":"agent"}'
+curl http://referee.example.com/score | jq .matrix
 ```
-
-Match modes: `pure-b` (all Tier B), `pure-c` (all Tier C control), `mixed` (~70/30).
 
 ---
 

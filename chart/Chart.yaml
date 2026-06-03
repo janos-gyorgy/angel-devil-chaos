@@ -1,9 +1,9 @@
 apiVersion: v2
 name: devilangel
-description: Angel/Devil chaos-engineering demo for Argo CD + n8n — a playfield, a referee scoreboard, and two agentic n8n workflows that measure what GitOps self-heal can and cannot fix.
+description: Chaos ablation harness for Argo CD + n8n — a playfield, a referee, and two n8n workflows that measure which automation layer (kubelet, Argo selfHeal, an agent, or none) resolves each fault.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 home: https://github.com/janos-gyorgy/angel-devil-chaos
 sources:
   - https://github.com/janos-gyorgy/angel-devil-chaos

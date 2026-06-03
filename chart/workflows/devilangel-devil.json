@@ -3,16 +3,16 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Devil Fault Injector (Phase 7)\n\n**Trigger:** production webhook `POST /webhook/da-devil`\nThe Referee's match loop POSTs `{run_id, fault_type, tier, tenant, namespace}` per round.\n\n**This workflow is a dumb executor** — the Referee picks the fault and writes devil_injections; the Devil just performs the injection. `Which Fault?` routes on `fault_type`:\n\n**Tier B — `db-truncate` (green-but-dead):**\n- POST tenant mini-api `/chaos/truncate`; pod stays Running, /healthz 200, /db-ping red\n- Argo can't see it (no manifest drift) → only the Angel's restart heals it\n\n**Tier C — `scale-db-zero` (control group):**\n- PATCH the tenant `mini-db` Deployment `spec.replicas=0` via the K8s API (K8s Devil Bearer creds, da-devil SA)\n- This IS manifest drift → Argo selfHeal reverts it in seconds, no Angel action needed\n\nWorkflow must be **active** for the production webhook to register.",
-        "height": 340,
-        "width": 540,
+        "content": "## Devil Fault Injector\n\n**Trigger:** webhook `POST /webhook/da-devil`. The Referee posts `{run_id, fault_type, expected_layer, tenant, namespace}` per round; the Devil is a dumb executor and `Which Fault?` routes on `fault_type`.\n\nFour faults, one per resolution lane:\n\n- **crash** (kubelet): POST mini-api `/chaos/crash` — /healthz fails, the liveness probe restarts the pod.\n- **scale-db-zero** (gitops): PATCH mini-db Deployment `replicas=0` — manifest drift Argo reverts.\n- **bad-image** (gitops): PATCH mini-db image to a bogus tag — manifest drift Argo reverts.\n- **db-truncate** (agent): POST mini-api `/chaos/truncate` — green-but-dead; no drift, not restart-healable, needs the Angel's restore.",
+        "height": 320,
+        "width": 560,
         "color": 7
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        -40,
-        -320
+        -608,
+        -160
       ],
       "id": "phase4-note",
       "name": "Phase 4 Note"
@@ -85,6 +85,54 @@
               },
               "renameOutput": true,
               "outputKey": "scale-db-zero"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "crash-cond",
+                    "leftValue": "={{ $json.body.fault_type }}",
+                    "rightValue": "crash",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "crash"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "bad-image-cond",
+                    "leftValue": "={{ $json.body.fault_type }}",
+                    "rightValue": "bad-image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "bad-image"
             }
           ]
         },
@@ -119,8 +167,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        500,
-        -60
+        512,
+        -64
       ],
       "id": "inject-truncate",
       "name": "Inject: Truncate DB"
@@ -142,8 +190,8 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        500,
-        140
+        512,
+        208
       ],
       "id": "unknown-fault",
       "name": "Unknown Fault"
@@ -170,11 +218,69 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        500,
-        60
+        512,
+        64
       ],
       "id": "450c779c-7811-43a3-9325-0edf8ff00c9f",
       "name": "Inject: Scale DB to 0",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER_K8S_DEVIL_BEARER",
+          "name": "K8s Devil Bearer"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://mini-api.' + $('Devil Webhook').item.json.body.namespace + '.svc.cluster.local/chaos/crash' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { run_id: $('Devil Webhook').item.json.body.run_id } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        512,
+        192
+      ],
+      "id": "10c479a2-d12a-4014-8bee-85722433587f",
+      "name": "Inject: Crash"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://kubernetes.default.svc.cluster.local:443/apis/apps/v1/namespaces/' + $('Devil Webhook').item.json.body.namespace + '/deployments/mini-db' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/strategic-merge-patch+json",
+        "body": "={{ JSON.stringify({ spec: { template: { spec: { containers: [ { name: 'postgres', image: 'postgres:does-not-exist-9.9' } ] } } } }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        512,
+        320
+      ],
+      "id": "4c39efbd-b6d2-409e-8bb8-420b3148ee5b",
+      "name": "Inject: Bad Image",
       "credentials": {
         "httpHeaderAuth": {
           "id": "PLACEHOLDER_K8S_DEVIL_BEARER",
@@ -213,6 +319,20 @@
         ],
         [
           {
+            "node": "Inject: Crash",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Inject: Bad Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Unknown Fault",
             "type": "main",
             "index": 0
@@ -224,7 +344,8 @@
   "active": false,
   "settings": {
     "executionOrder": "v1",
-    "saveManualExecutions": true
+    "saveManualExecutions": true,
+    "binaryMode": "separate"
   },
   "pinData": {},
   "meta": {

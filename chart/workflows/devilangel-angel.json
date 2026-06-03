@@ -3,16 +3,16 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Angel Fault Healer\n\nPolls each tenant's `/db-ping` every 15s during an active match and **diagnoses by symptom** (`fault_signature`, derived in Prep Action):\n\n- **DB:CorruptedTable:ZeroNotes** (Tier B — green-but-dead): notes table truncated, pod still Running, Argo is blind. Angel restarts mini-api (reseeds DB on startup), waits, verifies → `healed_by=angel-action`.\n- **DB:Unreachable:*** (Tier C — control group): mini-db Deployment scaled to 0, i.e. real manifest drift Argo owns. Angel **stands down**, waits ~30s for selfHeal, verifies recovery → `healed_by=gitops`. If Argo fails to heal in the window → `escalated`.\n\nThe split is the whole point: the Angel only acts on what GitOps **cannot** see, and credits GitOps for what it reverts. (Earlier versions polled Argo's sync status to catch it mid-heal, but selfHeal reverts in ~5s — faster than the 15s poll — so the Angel raced Argo and mis-credited itself. Routing on the symptom removes the race.)\n\n**To arm:** `POST /set-active {\"active\": true}` with reset-secret header",
+        "content": "## Angel Fault Healer\n\nRuns only when the Referee reports `angel_enabled` (false during the **baseline** ablation arm, so the harness can measure kubelet + Argo without the Angel). Polls each tenant's `/db-ping` and acts only where it is actually needed:\n\n- **Can't reach the app** (connection error — e.g. a crash) → stand down. That's the kubelet's lane (liveness restart).\n- **DB:Unreachable** (mini-db scaled to 0 / bad image) → stand down. Manifest drift Argo selfHeal owns.\n- **DB:CorruptedTable:ZeroNotes** (truncate — green-but-dead, no drift, not restart-healable) → **POST /admin/restore** (restore from backup). Verify → `agent-action`. If restore fails / no backup → `escalated` (unrecoverable).\n\nThe Angel only acts on what neither the kubelet nor Argo can see. The Referee attributes each round's resolving layer by ablation, not by this label.\n\n**To arm:** the Referee sets angel_enabled via /start-match (arm=agent).",
         "height": 260,
-        "width": 520,
+        "width": 1144,
         "color": 4
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        -40,
-        -300
+        32,
+        -304
       ],
       "id": "setup-notes",
       "name": "Setup Notes"
@@ -51,7 +51,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        220,
+        224,
         0
       ],
       "id": "check-active",
@@ -61,15 +61,15 @@
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 2,
             "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
+            "caseSensitive": true,
+            "typeValidation": "strict"
           },
           "conditions": [
             {
-              "id": "gate-cond",
-              "leftValue": "={{ $json.active }}",
+              "id": "active-cond",
+              "leftValue": "={{ $json.angel_enabled }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -78,12 +78,13 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        440,
+        448,
         0
       ],
       "id": "gate",
@@ -94,21 +95,20 @@
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        440,
-        200
+        448,
+        208
       ],
       "id": "paused",
       "name": "Match Paused"
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "return [\n  { json: { tenant: 'acme',   ns: 'da-tenant-acme',   vaultRole: 'da-tenant-acme'   } },\n  { json: { tenant: 'globex', ns: 'da-tenant-globex', vaultRole: 'da-tenant-globex' } }\n];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        660,
+        672,
         0
       ],
       "id": "set-tenants",
@@ -116,7 +116,6 @@
     },
     {
       "parameters": {
-        "batchSize": 1,
         "options": {}
       },
       "type": "n8n-nodes-base.splitInBatches",
@@ -142,11 +141,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1100,
+        1104,
         0
       ],
       "id": "check-secret",
-      "name": "Check DB"
+      "name": "Check DB",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -169,12 +169,13 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1320,
+        1328,
         0
       ],
       "id": "fault-check",
@@ -185,21 +186,20 @@
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        1320,
-        200
+        1328,
+        208
       ],
       "id": "no-fault",
       "name": "No Fault"
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "// n8n task runner disallows require('crypto'); build a v4 uuid inline\nconst uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });\nconst t = $('Loop Tenants').item.json;\n// Derive the fault signature from the db-ping detail so Tier B (zero notes)\n// and Tier C (db unreachable / scaled to zero) are labelled distinctly.\nconst detail = String((($('Check DB').item.json) || {}).detail || '');\nconst fault_signature = /note/i.test(detail)\n  ? 'DB:CorruptedTable:ZeroNotes'\n  : 'DB:Unreachable:' + (detail || 'unknown');\nreturn [{ json: {\n  action_id:   uuid,\n  ts_detected: new Date().toISOString(),\n  target:      'mini-api.' + t.ns,\n  tenant:      t.tenant,\n  ns:          t.ns,\n  vaultRole:   t.vaultRole,\n  fault_signature\n}}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1540,
+        1552,
         0
       ],
       "id": "prep-action",
@@ -208,87 +208,36 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://referee.da-referee.svc.cluster.local/angel-action",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { action_id: $('Prep Action').item.json.action_id, ts_detected: $('Prep Action').item.json.ts_detected, ts_healed: new Date().toISOString(), target: $('Prep Action').item.json.target, fault_signature: $('Prep Action').item.json.fault_signature, healed_by: 'gitops', attempts: 0, tenant: $('Prep Action').item.json.tenant } }}"
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2200,
-        -160
-      ],
-      "id": "log-gitops",
-      "name": "Log GitOps Heal"
-    },
-    {
-      "parameters": {
-        "method": "DELETE",
-        "url": "={{ 'https://kubernetes.default.svc.cluster.local:443/api/v1/namespaces/' + $('Prep Action').item.json.ns + '/pods?labelSelector=' + encodeURIComponent('app.kubernetes.io/name=mini-api') }}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ 'http://mini-api.' + $('Prep Action').item.json.ns + '.svc.cluster.local/admin/restore' }}",
         "options": {
-          "allowUnauthorizedCerts": true,
           "response": {
             "response": {
               "neverError": true
             }
           }
-        }
+        },
+        "sendBody": false
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
+        2208,
         160
       ],
       "id": "vault-rebind",
-      "name": "Restart Mini-API",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "PLACEHOLDER_K8S_ANGEL_BEARER",
-          "name": "K8s Angel Bearer"
-        }
-      }
+      "name": "Restore from Backup"
     },
     {
-      "parameters": {
-        "resume": "timeInterval",
-        "unit": "seconds",
-        "amount": 5
-      },
+      "parameters": {},
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        2420,
+        2432,
         160
       ],
       "id": "eso-force-sync",
-      "name": "Wait Delete (5s)",
-      "webhookId": "da-angel-wait-delete-5s",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "PLACEHOLDER_K8S_ANGEL_BEARER",
-          "name": "K8s Angel Bearer"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "resume": "timeInterval",
-        "unit": "seconds",
-        "amount": 20
-      },
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        2640,
-        160
-      ],
-      "id": "wait-eso",
-      "name": "Wait Restart (20s)",
-      "webhookId": "da-angel-wait-restart-20s"
+      "name": "Settle (5s)",
+      "webhookId": "da-angel-wait-delete-5s"
     },
     {
       "parameters": {
@@ -304,7 +253,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2860,
+        2864,
         160
       ],
       "id": "verify",
@@ -331,12 +280,13 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3080,
+        3088,
         160
       ],
       "id": "healed-check",
@@ -348,13 +298,14 @@
         "url": "http://referee.da-referee.svc.cluster.local/angel-action",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { action_id: $('Prep Action').item.json.action_id, ts_detected: $('Prep Action').item.json.ts_detected, ts_healed: new Date().toISOString(), target: $('Prep Action').item.json.target, fault_signature: $('Prep Action').item.json.fault_signature, healed_by: 'angel-action', attempts: 1, tenant: $('Prep Action').item.json.tenant } }}"
+        "jsonBody": "={{ { action_id: $('Prep Action').item.json.action_id, ts_detected: $('Prep Action').item.json.ts_detected, ts_healed: new Date().toISOString(), target: $('Prep Action').item.json.target, fault_signature: $('Prep Action').item.json.fault_signature, healed_by: 'agent-action', attempts: 1, tenant: $('Prep Action').item.json.tenant } }}",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3300,
-        60
+        3312,
+        64
       ],
       "id": "log-angel",
       "name": "Log Angel Heal"
@@ -365,13 +316,14 @@
         "url": "http://referee.da-referee.svc.cluster.local/angel-action",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { action_id: $('Prep Action').item.json.action_id, ts_detected: $('Prep Action').item.json.ts_detected, ts_healed: null, target: $('Prep Action').item.json.target, fault_signature: $('Prep Action').item.json.fault_signature, healed_by: 'escalated', attempts: 1, tenant: $('Prep Action').item.json.tenant } }}"
+        "jsonBody": "={{ { action_id: $('Prep Action').item.json.action_id, ts_detected: $('Prep Action').item.json.ts_detected, ts_healed: null, target: $('Prep Action').item.json.target, fault_signature: $('Prep Action').item.json.fault_signature, healed_by: 'escalated', attempts: 1, tenant: $('Prep Action').item.json.tenant } }}",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3300,
-        280
+        3312,
+        288
       ],
       "id": "log-escalate",
       "name": "Log Escalated"
@@ -381,8 +333,8 @@
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        1100,
-        200
+        1104,
+        208
       ],
       "id": "all-done",
       "name": "All Done"
@@ -408,7 +360,8 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
@@ -421,23 +374,11 @@
     },
     {
       "parameters": {
-        "resume": "timeInterval",
-        "unit": "seconds",
-        "amount": 30
-      },
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1980,
-        -180
-      ],
-      "id": "72c13e47-1f0a-4631-925d-e7e5fc621756",
-      "name": "Wait for GitOps",
-      "webhookId": "a8024bd0-c139-4c81-aa66-d28b7d35743d"
-    },
-    {
-      "parameters": {
-        "url": "={{ 'http://mini-api.' + $('Prep Action').item.json.ns + '.svc.cluster.local/db-ping' }}",
+        "method": "POST",
+        "url": "http://referee.da-referee.svc.cluster.local/angel-action",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { action_id: $('Prep Action').item.json.action_id, ts_detected: $('Prep Action').item.json.ts_detected, ts_healed: new Date().toISOString(), target: $('Prep Action').item.json.target, fault_signature: $('Prep Action').item.json.fault_signature, healed_by: 'stood-down', attempts: 0, tenant: $('Prep Action').item.json.tenant } }}",
         "options": {
           "response": {
             "response": {
@@ -452,40 +393,8 @@
         2200,
         -180
       ],
-      "id": "b8e04a7e-1748-4d8b-ae51-af14f98be1f9",
-      "name": "Verify GitOps"
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "version": 2,
-            "leftValue": "",
-            "caseSensitive": true,
-            "typeValidation": "strict"
-          },
-          "conditions": [
-            {
-              "id": "gitops-healed-cond",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "ok",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        2420,
-        -180
-      ],
-      "id": "089a3b81-6044-4bfe-b274-070118405509",
-      "name": "GitOps Healed?"
+      "id": "684d1a49-2dd6-4bf6-90e5-89679c896935",
+      "name": "Log Stood Down"
     }
   ],
   "connections": {
@@ -566,6 +475,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "No Fault",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -598,44 +514,11 @@
         ]
       ]
     },
-    "Log GitOps Heal": {
+    "Restore from Backup": {
       "main": [
         [
           {
-            "node": "Loop Tenants",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Restart Mini-API": {
-      "main": [
-        [
-          {
-            "node": "Wait Delete (5s)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait Delete (5s)": {
-      "main": [
-        [
-          {
-            "node": "Wait Restart (20s)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait Restart (20s)": {
-      "main": [
-        [
-          {
-            "node": "Verify DB",
+            "node": "Settle (5s)",
             "type": "main",
             "index": 0
           }
@@ -708,54 +591,36 @@
       "main": [
         [
           {
-            "node": "Wait for GitOps",
+            "node": "Log Stood Down",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Restart Mini-API",
+            "node": "Restore from Backup",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Wait for GitOps": {
+    "Settle (5s)": {
       "main": [
         [
           {
-            "node": "Verify GitOps",
+            "node": "Verify DB",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Verify GitOps": {
+    "Log Stood Down": {
       "main": [
         [
           {
-            "node": "GitOps Healed?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "GitOps Healed?": {
-      "main": [
-        [
-          {
-            "node": "Log GitOps Heal",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Log Escalated",
+            "node": "Loop Tenants",
             "type": "main",
             "index": 0
           }
@@ -767,7 +632,8 @@
   "settings": {
     "executionOrder": "v1",
     "saveManualExecutions": true,
-    "executionTimeout": 300
+    "executionTimeout": 300,
+    "binaryMode": "separate"
   },
   "pinData": {},
   "meta": {

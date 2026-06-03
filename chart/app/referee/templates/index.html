@@ -2,23 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>devilangel — chaos referee</title>
+  <title>devilangel — chaos ablation harness</title>
   <style>
     :root {
-      --bg: #0f1115;
-      --panel: #181c24;
-      --border: #2a303d;
-      --fg: #e6e8ee;
-      --muted: #8b93a6;
-      --devil: #c0392b;
-      --angel: #1ca850;
-      --argo:  #4a90e2;
+      --bg: #0f1115; --panel: #181c24; --border: #2a303d;
+      --fg: #e6e8ee; --muted: #8b93a6;
+      --kubelet: #e08a3c; --gitops: #4a90e2; --agent: #1ca850; --unrecovered: #c0392b;
       --accent: #ffd166;
     }
     * { box-sizing: border-box; }
     body { font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
-           background: var(--bg); color: var(--fg); margin: 0; padding: 2rem;
-           max-width: 980px; margin: 0 auto; }
+           background: var(--bg); color: var(--fg); margin: 0 auto; padding: 2rem;
+           max-width: 1040px; }
     h1 { letter-spacing: 0.05em; }
     h1 .tag { color: var(--muted); font-weight: 400; font-size: 1rem; }
     .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
@@ -29,59 +24,50 @@
     button { background: var(--accent); color: #1a1a1a; border: none;
              padding: 0.5rem 1rem; border-radius: 4px; font-weight: 600;
              cursor: pointer; font-family: inherit; }
-    button.ghost { background: transparent; color: var(--muted);
-                   border: 1px solid var(--border); }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
-    input, select { background: var(--bg); color: var(--fg);
-                    border: 1px solid var(--border); padding: 0.4rem;
-                    border-radius: 4px; font-family: inherit; }
-    .feed { background: #07090c; border: 1px solid var(--border);
-            border-radius: 6px; padding: 0.75rem; height: 360px;
-            overflow-y: auto; font-size: 0.85rem; line-height: 1.4;
-            white-space: pre-wrap; }
-    .feed .devil { color: var(--devil); }
-    .feed .angel { color: var(--angel); }
-    .feed .argo  { color: var(--argo); }
-    .feed .meta  { color: var(--muted); }
-    .score { font-size: 1.3rem; margin: 0.5rem 0; }
-    .score .a { color: var(--angel); }
-    .score .d { color: var(--devil); }
-    .ctl-row { display: flex; gap: 0.5rem; align-items: center;
-               margin-bottom: 0.75rem; flex-wrap: wrap; }
-    .footer { color: var(--muted); margin-top: 2rem; font-size: 0.8rem; }
-    code.k { background: var(--bg); padding: 0.1rem 0.3rem; border-radius: 3px;
-             border: 1px solid var(--border); }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    input, select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+                    padding: 0.4rem; border-radius: 4px; font-family: inherit; }
+    .feed { background: #07090c; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.75rem; height: 320px; overflow-y: auto; font-size: 0.82rem;
+            line-height: 1.4; white-space: pre-wrap; }
+    .feed .devil { color: var(--unrecovered); } .feed .angel { color: var(--agent); }
+    .feed .argo  { color: var(--gitops); } .feed .meta { color: var(--muted); }
+    .ctl-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    table.matrix { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 0.5rem; }
+    table.matrix th, table.matrix td { text-align: left; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border); }
+    table.matrix th { color: var(--muted); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.08em; }
+    .pill { padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+    .pill.kubelet { background: rgba(224,138,60,.15); color: var(--kubelet); }
+    .pill.gitops { background: rgba(74,144,226,.15); color: var(--gitops); }
+    .pill.agent { background: rgba(28,168,80,.15); color: var(--agent); }
+    .pill.unrecovered { background: rgba(192,57,43,.15); color: var(--unrecovered); }
+    .pill.none { color: var(--muted); }
+    .footer { color: var(--muted); margin-top: 1.5rem; font-size: 0.78rem; }
   </style>
 </head>
 <body>
 
-<h1>devilangel <span class="tag">// chaos referee · one-time match</span></h1>
+<h1>devilangel <span class="tag">// chaos ablation harness · which layer heals which fault?</span></h1>
 
 <div class="panels">
   <div class="panel">
-    <h2>Start a match</h2>
+    <h2>Run an arm</h2>
     <div class="ctl-row">
-      <label>rounds <input id="rounds" type="number" min="1" max="20" value="8" style="width:4rem"></label>
-      <label>mode
-        <select id="mode">
-          <option value="mixed">mixed (70/30)</option>
-          <option value="pure-b">pure Tier B</option>
-          <option value="pure-c">pure Tier C</option>
+      <label>rounds <input id="rounds" type="number" min="1" max="40" value="8" style="width:4rem"></label>
+      <label>arm
+        <select id="arm">
+          <option value="agent">agent (Angel on)</option>
+          <option value="baseline">baseline (Angel off)</option>
         </select>
       </label>
-      <button id="start">▶ start</button>
+      <button id="start">▶ run</button>
     </div>
     <div id="start-status" class="meta" style="font-size:0.85rem"></div>
 
-    <h2 style="margin-top:1.5rem">Scoreboard</h2>
-    <div class="score">
-      angel <span class="a" id="angel-pts">–</span>
-      &nbsp;·&nbsp;
-      devil <span class="d" id="devil-pts">–</span>
-    </div>
-    <div class="meta" id="match-meta" style="font-size:0.85rem">no matches yet</div>
+    <h2 style="margin-top:1.5rem">Resolution matrix</h2>
+    <div id="matrix"><span class="meta" style="font-size:0.85rem">no runs yet — run the baseline and agent arms</span></div>
 
-    <div style="margin-top:1.5rem">
+    <div style="margin-top:1.25rem">
       <button class="ghost" id="reset">↺ reset</button>
       <span class="meta" id="reset-status" style="font-size:0.85rem"></span>
     </div>
@@ -94,42 +80,37 @@
 </div>
 
 <div class="footer">
-  Manual smoke test: <code class="k">psql -U referee -d daref -c "INSERT INTO devil_injections (run_id,match_id,round_no,fault_type,tier,namespace,target,tenant) VALUES (gen_random_uuid(), gen_random_uuid(), 1, 'pod-kill', 'C', 'da-tenant-acme', 'mini-api-xyz', 'acme');"</code>
-  — should land in this feed within 1s.
+  Each fault is run under two arms. A fault that recovers with the Angel <em>off</em> was healed by the
+  platform layer that owns it (kubelet restart or Argo selfHeal); one that recovers only with the Angel
+  <em>on</em> is the agent's; one that recovers under neither is unrecoverable.
 </div>
 
 <script>
   const feed = document.getElementById('feed');
   const ts = d => new Date(d || Date.now()).toISOString().slice(11, 19);
+  const LAYERS = ['kubelet', 'gitops', 'agent', 'unrecovered'];
 
-  function emoji(table) {
-    if (table === 'devil_injections') return '😈';
-    if (table === 'angel_actions')    return '👼';
-    if (table === 'match_results')    return '🏁';
-    return '·';
+  function emoji(t) {
+    return t === 'devil_injections' ? '😈' : t === 'angel_actions' ? '👼' : t === 'match_results' ? '🏁' : '·';
   }
-  function cls(table) {
-    if (table === 'devil_injections') return 'devil';
-    if (table === 'angel_actions')    return 'angel';
-    if (table === 'match_results')    return 'argo';
-    return 'meta';
+  function cls(t) {
+    return t === 'devil_injections' ? 'devil' : t === 'angel_actions' ? 'angel' : t === 'match_results' ? 'argo' : 'meta';
   }
-  function render(payload) {
-    const t = payload._table;
-    if (t === 'devil_injections') {
-      return `${emoji(t)} ${payload.fault_type.padEnd(18)} ${payload.namespace}/${payload.target}  [Tier ${payload.tier}]`;
-    }
+  function render(p) {
+    const t = p._table;
+    if (t === 'devil_injections')
+      return `${emoji(t)} ${(p.fault_type||'').padEnd(14)} ${p.namespace}  [→ ${p.expected_layer||'?'}]`;
     if (t === 'angel_actions') {
-      const heal = payload.healed_by || 'detected';
-      const sig = payload.fault_signature ? ` (sig: ${payload.fault_signature})` : '';
-      return `${emoji(t)} ${heal.padEnd(18)} ${payload.tenant}/${payload.target}${sig}`;
+      const sig = p.fault_signature ? ` (${p.fault_signature})` : '';
+      return `${emoji(t)} ${(p.healed_by||'detected').padEnd(13)} ${p.tenant}${sig}`;
     }
     if (t === 'match_results') {
-      return `${emoji(t)} match complete — angel ${payload.angel_points} / devil ${payload.devil_points}  (winner: ${payload.winner})`;
+      const r = p.resolved_jsonb || {};
+      const parts = LAYERS.map(l => `${l}:${r[l]||0}`).join(' ');
+      return `${emoji(t)} arm=${p.arm} — ${parts}`;
     }
-    return JSON.stringify(payload);
+    return JSON.stringify(p);
   }
-
   function append(line, klass) {
     if (feed.querySelector('.meta') && feed.children.length === 1) feed.innerHTML = '';
     const div = document.createElement('div');
@@ -140,55 +121,57 @@
   }
 
   const sse = new EventSource('/events');
-  sse.addEventListener('open',   e => append('connected', 'meta'));
-  sse.addEventListener('error',  e => append('stream error', 'meta'));
+  sse.addEventListener('open', () => append('connected', 'meta'));
+  sse.addEventListener('error', () => append('stream error', 'meta'));
   ['devil_injections', 'angel_actions', 'match_results'].forEach(table => {
-    sse.addEventListener(table, ev => {
-      const p = JSON.parse(ev.data);
-      append(render(p), cls(table));
-    });
+    sse.addEventListener(table, ev => append(render(JSON.parse(ev.data)), cls(table)));
   });
 
-  async function refreshScore() {
-    const r = await fetch('/score');
-    if (!r.ok) return;
-    const s = await r.json();
-    if (s.matches.length > 0) {
-      const m = s.matches[0];
-      document.getElementById('angel-pts').textContent = m.angel_points;
-      document.getElementById('devil-pts').textContent = m.devil_points;
-      document.getElementById('match-meta').textContent =
-        `last match: ${m.winner} won · ${m.rounds_total} rounds · ${m.mode}`;
-    }
+  function dominant(cell) {
+    let best = 'none', n = 0;
+    for (const l of LAYERS) if ((cell[l] || 0) > n) { n = cell[l]; best = l; }
+    return { layer: best, n };
   }
-  refreshScore();
-  setInterval(refreshScore, 5000);
+  async function refreshMatrix() {
+    const r = await fetch('/score'); if (!r.ok) return;
+    const s = await r.json();
+    if (!s.matrix || !s.matrix.length) return;
+    const faults = ['crash', 'scale-db-zero', 'bad-image', 'db-truncate'];
+    const arms = ['baseline', 'agent'];
+    const by = {};
+    s.matrix.forEach(c => { by[`${c.fault}|${c.arm}`] = c; });
+    let html = '<table class="matrix"><tr><th>fault</th><th>expected</th><th>baseline arm</th><th>agent arm</th></tr>';
+    for (const f of faults) {
+      const any = by[`${f}|baseline`] || by[`${f}|agent`];
+      const exp = any ? any.expected_layer : '–';
+      html += `<tr><td>${f}</td><td><span class="pill ${exp}">${exp}</span></td>`;
+      for (const a of arms) {
+        const c = by[`${f}|${a}`];
+        if (!c) { html += '<td><span class="pill none">–</span></td>'; continue; }
+        const d = dominant(c);
+        const fh = c.false_heals ? ` ⚠${c.false_heals}` : '';
+        html += `<td><span class="pill ${d.layer}">${d.layer}</span> <span class="meta">${d.n}/${c.n} · ${c.avg_mttr_s}s${fh}</span></td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</table>';
+    document.getElementById('matrix').innerHTML = html;
+  }
+  refreshMatrix();
+  setInterval(refreshMatrix, 5000);
 
   document.getElementById('start').addEventListener('click', async () => {
-    const body = {
-      rounds: Number(document.getElementById('rounds').value),
-      mode: document.getElementById('mode').value,
-    };
-    const r = await fetch('/start-match', {
-      method: 'POST',
-      headers: {'content-type': 'application/json'},
-      body: JSON.stringify(body),
-    });
+    const body = { rounds: Number(document.getElementById('rounds').value), arm: document.getElementById('arm').value };
+    const r = await fetch('/start-match', { method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body) });
     const txt = await r.text();
-    document.getElementById('start-status').textContent =
-      r.ok ? 'match started' : `${r.status}: ${txt.slice(0, 120)}`;
+    document.getElementById('start-status').textContent = r.ok ? `${body.arm} arm started` : `${r.status}: ${txt.slice(0, 120)}`;
   });
-
   document.getElementById('reset').addEventListener('click', async () => {
-    const secret = prompt('reset secret? (from Vault: secret/da-referee reset-secret)');
+    const secret = prompt('reset secret? (Vault: secret/da-referee reset-secret)');
     if (!secret) return;
-    const r = await fetch('/reset', {
-      method: 'POST',
-      headers: {'x-reset-secret': secret},
-    });
-    document.getElementById('reset-status').textContent =
-      r.ok ? 'tables archived + truncated' : `${r.status}: ${(await r.text()).slice(0, 80)}`;
-    refreshScore();
+    const r = await fetch('/reset', { method: 'POST', headers: {'x-reset-secret': secret} });
+    document.getElementById('reset-status').textContent = r.ok ? 'tables truncated' : `${r.status}`;
+    refreshMatrix();
   });
 </script>
 

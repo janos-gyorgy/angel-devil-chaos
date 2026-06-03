@@ -217,6 +217,8 @@ spec:
                 secretKeyRef:
                   name: mini-api-secrets
                   key: API_KEY
+            - name: BACKUP_AVAILABLE
+              value: {{ $t.backupAvailable | default $.Values.backupAvailable | quote }}
           readinessProbe:
             httpGet:
               path: /healthz

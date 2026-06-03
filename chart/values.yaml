@@ -29,11 +29,16 @@ tenants:
     vaultPath: secret/da-tenant-globex
     vaultRole: da-tenant-globex
 
-# Image tags. Built on the node (see helm-charts/devilangel/app/*/Dockerfile).
+# Image tags. Built locally and imported into the node (see app/*/Dockerfile).
 images:
-  miniApi: mini-api:0.2.0
-  referee: da-referee:0.4.0
+  miniApi: mini-api:0.3.0
+  referee: da-referee:0.5.2
   miniDb: postgres:15-alpine
+
+# Per-tenant default for /admin/restore. When false, a truncate fault is
+# unrecoverable in-cluster even with the agent (no backup to restore from).
+# Override per tenant with `backupAvailable: false` on a tenant entry.
+backupAvailable: true
 
 # Resource fence applied to every container that doesn't override.
 defaults:
