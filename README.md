@@ -8,6 +8,10 @@ A **Devil** injects faults. An **Angel** tries to heal them. A **Referee** runs 
 
 The interesting part isn't the demo — it's what the scoreboard reveals about the **boundary of GitOps self-healing**.
 
+![The Referee scoreboard: a finished mixed match reading angel 10, devil 0, with a live feed where Tier B db-truncate faults are healed by angel-action and Tier C scale-db-zero faults are healed by gitops.](docs/img/scoreboard.png)
+
+In a healthy run the live feed reads its own conclusion out loud: `db-truncate [Tier B] → angel-action` (GitOps couldn't see it) and `scale-db-zero [Tier C] → gitops` (Argo reverted it, the Angel stood down).
+
 ---
 
 ## The core idea: two tiers of fault
@@ -63,6 +67,10 @@ The Angel never reads which fault was injected. It infers the tier from the **sy
 > Argo's blind spot. That distinction is something a real SRE makes too, and it
 > removes the race entirely.
 
+![The Angel n8n workflow: tenants are polled every 15s; on a fault, Prep Action derives a signature that an "Infra Fault?" switch routes on. DB:Unreachable takes the top path — Wait for GitOps, Verify, log a gitops heal — while DB:CorruptedTable takes the bottom path — Restart Mini-API, wait, verify, log an angel-action heal.](docs/img/angel-workflow.png)
+
+The `Infra Fault?` switch is the whole fix: the top branch is the Angel standing down for GitOps, the bottom branch is the Angel doing what GitOps can't — decided from the symptom, not from anything Argo reports.
+
 ---
 
 ## Architecture
@@ -97,6 +105,10 @@ The Angel never reads which fault was injected. It infers the tier from the **sy
 - **Playfield tenants** (`da-tenant-*`): each is a `mini-api` (FastAPI) + `mini-db` (Postgres) with three health checks (`/healthz`, `/db-ping`, `/secret-check`). They exist to be broken and watched. Per-tenant `ResourceQuota`, `LimitRange`, and a namespace-scoped secret store keep them isolated.
 - **Referee** (`da-referee`): orchestrates matches, owns the scoreboard Postgres, streams live events over SSE.
 - **n8n RBAC**: the Devil and Angel run as n8n workflows authenticating to the Kubernetes API with **separate, namespace-scoped ServiceAccounts** (`da-devil`, `da-angel`). The Devil can delete pods and patch Deployments *only in the tenant namespaces*; the Angel gets a deliberately narrow healer role. Blast radius is bounded by RBAC, not by hope.
+
+![The Devil n8n workflow: a webhook feeds a "Which Fault?" switch that routes db-truncate to an "Inject: Truncate DB" node (Tier B) and scale-db-zero to an "Inject: Scale DB to 0" node (Tier C), with an Unknown Fault fallback.](docs/img/devil-workflow.png)
+
+The Devil is a dumb executor — the Referee decides *what* breaks and the switch only routes `fault_type` to the right injector. Tier B calls the tenant's own `/chaos/truncate`; Tier C patches the `mini-db` Deployment to zero replicas via the Kubernetes API.
 
 ---
 
